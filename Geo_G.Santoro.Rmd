@@ -1,0 +1,478 @@
+---
+title: "Emilia-Romagna Register of Defibrillators"
+author: "Gianmarco Santoro"
+output: pdf_document
+---
+
+# Geographic Data
+In this work DAE devices distribution is studied. DAE stands to "Automated External Defibrillator", which are useful in case of cardiac emergencies, when time is crucial, so closeness to one of this devices is very important.
+
+## Set work directory, install and load libraries
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# Libraries
+# install.packages("tidyverse")
+# install.packages("sp")
+# install.packages("sf")
+# install.packages("rmapshaper")
+# install.packages("wbstats")
+# install.packages("rnaturalearth")
+# install.packages("mapview")
+# install.packages("spatialreg")
+# install.packages("spatstat")
+
+library(sp)
+library(sf)
+library(tidyverse)
+library(rgeos)
+library(maptools)
+library(tidyr)
+library(spatstat)
+library(splancs) # to compare kernel estimations
+```
+
+## Data management and graphical representation
+
+## Import dataset in a dataframe and check for duplicated records
+```{r}
+dae_full <- read.csv("progetto-dae.csv", sep = ";")
+
+duplicated_record = duplicated(dae_full)
+double_record = subset(dae_full, duplicated_record) 
+print(double_record)
+```
+There aren't duplicates but in the same place, e.g. Technogym, there are 3 DAE with the same location. Discard them anyway since just 83 over 5298 records.
+
+## Selecting specific columns in a new df, keeping only useful info
+```{r}
+dae <- dae_full[c("Nome", "Città", "Geo.Point")]
+head(dae)
+```
+
+## Discard duplicated records
+```{r}
+duplicated_rows = duplicated(dae)
+double_data = subset(dae, duplicated_rows) 
+head(double_data)
+#print(count(double_data))
+```
+
+## Remove duplicates from dae
+```{r}
+dae <- unique(dae)
+#head(dae)
+count(dae)
+```
+
+## Count how many cities
+```{r}
+unique_cities <- unique(dae$Città)
+city_numb = length(unique_cities)
+print(city_numb)
+```
+
+
+```{r}
+#table(dae$Città)
+barplot(table(dae$Città),main='DAE per Municipality')
+```
+
+Since it's difficult to understand, select the 10 with most and less DAE.
+
+```{r}
+# Count the number of occurrences of each city
+city_counts <- table(dae$Città)
+
+# Sort the cities by their counts in descending order
+sorted_cities <- sort(city_counts, decreasing = TRUE)
+#print(sorted_cities)
+head(sorted_cities, 10)
+tail(sorted_cities, 10)
+
+# Extract the names of the top and bottom cities
+top_cities <- names(sorted_cities)[1:10]
+bottom_cities <- names(sorted_cities)[(length(sorted_cities) - 9):length(sorted_cities)]
+#print(top_cities)
+#print(bottom_cities)
+
+# Filter the data for the top and bottom cities
+top_data <- dae[dae$Città %in% top_cities, ]
+bottom_data <- dae[dae$Città %in% bottom_cities, ]
+```
+
+
+```{r}
+# Barplot for top cities
+barplot(table(top_data$Città), main = 'Top 10 Cities with Most DAE', col = "forestgreen", las = 1, cex.names = 0.4)
+```
+
+
+```{r}
+# Barplot for bottom cities
+#barplot(table(bottom_data$Città), main = '10 Cities with Less DAE', col = "orangered", las = 2, cex.names = 0.4)
+```
+
+
+```{r}
+# devide geopoint into latutidue + longitude
+dae_coord <- separate(dae, 
+                      Geo.Point, 
+                      into = c("Latitude", "Longitude"),
+                      sep = ", ")
+head(dae_coord)
+```
+
+## Convert the dataset to an 'sf' object and specify CRS
+```{r}
+dae_wgs <- st_as_sf(dae_coord, 
+                      coords = c("Longitude", "Latitude"),
+                      crs = 4326)  # 3857 EPSG code for WGS84 (standard for lat/long)
+head(dae_wgs)
+#print(dae_wgs)
+```
+
+## Map where devices are located
+```{r}
+ggplot(dae_wgs) +
+  geom_sf(color = "forestgreen", alpha = .5, size = .3) +
+  labs(title = "Single Regional Register of Defibrillators - AED") +
+  theme_minimal() +
+  coord_sf(expand = FALSE)
+```
+
+## Map Emilia-Romagna municipalities borders
+```{r}
+## import shapefile - SpatialData
+municipalities <- sf::st_read("V_COM_GPG_3.shx")
+#print(municipalities)
+#summary(municipalities)
+
+# sistema di riferimento geografico: WGS84 - UTM ZONE 32N
+# con il pacchetto "sf" si possono convertire i CRS
+# Set the correct CRS, EPSG:4326 to WGS84
+st_crs(municipalities) <- st_crs("EPSG:4326")
+
+# Convert the dataset to an 'sf' object and specify CRS
+municipalities_coord <- st_as_sf(municipalities, 
+                      coords = c("Longitude", "Latitude"),
+                      crs = 4326) 
+
+print(municipalities_coord)
+#summary(municipalities_coord)
+
+ggplot(municipalities_coord) +
+  geom_sf(color = "darkgray", alpha = .5, size = .3) +
+  labs(title = "Municipalities") +
+  theme_minimal() +
+  coord_sf(expand = FALSE)
+```
+
+## Check of reference systems are same
+```{r}
+st_crs(dae_wgs) == st_crs(municipalities_coord)
+```
+
+## Map DAE devices and municipalities
+```{r}
+# Plot of devices and municipalities
+ggplot() +
+  geom_sf(data = municipalities_coord, color = "darkgray", alpha = 0.5, size = 0.3) +
+  geom_sf(data = dae_wgs, color = "forestgreen", alpha = 0.5, size = 0.3) +
+  labs(title = "Defibrillators in Emilia-Romagna") +
+  theme_minimal() +
+  coord_sf(expand = FALSE)
+```
+
+We can notice that 2 devices are located in the Adriatic sea, as well as San Marino's ones are shown. The ones in the sea can be in islands or gas platforms or in other off-shore systems.
+
+
+# Spatial Point Patterns Analysis
+```{r}
+head(dae_wgs)
+```
+
+## Use projection 3003 to have better insights in meters and not degrees
+```{r}
+# EPSG:4326 for WGS 84 and EPSG:3003 for Italian projection from Monte Mario reference point
+dae_proj1 <- st_transform(dae_wgs, crs = 3003)
+print(dae_proj1)
+
+municipalities_proj <- st_transform(municipalities_coord, crs = 3003)
+print(municipalities_proj)
+
+# Extracting coordinates into separate columns, devide geometry into latutidue + longitude
+coordinates <- st_coordinates(dae_proj1)
+dae_proj <- cbind(dae_proj1$Nome, dae_proj1$Città, coordinates)
+
+# Rename the columns
+colnames(dae_proj) <- c("Nome", "Città", "Longitude", "Latitude")
+head(dae_proj)
+```
+
+
+```{r}
+dae_small <- dae_proj
+summary(dae_small)
+
+# Ensure dae_small is a dataframe
+dae_small <- as.data.frame(dae_small)
+
+# Convert Longitude and Latitude columns to numeric
+dae_small$Longitude <- as.numeric(dae_small$Longitude)
+dae_small$Latitude <- as.numeric(dae_small$Latitude)
+
+# Round Longitude and Latitude to 5 decimal places
+dae_small$Longitude <- round(dae_small$Longitude, 5)
+dae_small$Latitude <- round(dae_small$Latitude, 5)
+
+# duplicated_small = duplicated(dae_small)
+# double_small = subset(dae_small, duplicated_small) 
+# print(double_small)
+
+# Remove duplicates
+dae_small <- unique(dae_small)
+
+# Check the first few rows to confirm the changes
+summary(dae_small)
+head(dae_small)
+```
+
+Considered rectangular area containing location of devices
+```{r}
+x_range <- range(dae_small$Longitude)
+y_range <- range(dae_small$Latitude) 
+xy_area <- owin(x_range, y_range)
+
+# Transform into ppp (point pattern dataset) to show info in the area of interest
+dae_ppp = ppp(dae_small$Longitude, dae_small$Latitude, window = xy_area)  # warning: duplicated points
+summary(dae_ppp)
+```
+
+## Discard duplicates on this projection
+
+Genrally in PPP is good practice to have no coinciding points: "when the data has coincidence points, some statistical procedures will be severely affected. So it is always strongly advisable to check for duplicate points and to decide on a strategyfor dealing with them if they are present” (Baddeley et al., 2016: p.60).
+```{r}
+# Move a little overlapping points
+dae_ppp_r <- dae_ppp[!duplicated(dae_ppp)]
+dup_j <- rjitter(dae_ppp[duplicated(dae_ppp)], radius=0.01, retry=TRUE, nsim=1, drop=TRUE)
+
+dae_ppp_j <- superimpose(dae_ppp_r,dup_j) 
+dae_ppp_originali <- dae_ppp
+dae_ppp <- dae_ppp_j
+```
+
+
+```{r}
+plot(dae_ppp_originali, cols='forestgreen',  cex=0.3, main = "Point Pattern Plot") 
+plot(dup_j, pch=2, cols='brown', add=T, cex=0.6)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.3)
+
+# Create a legend for the plot
+legend("bottomleft", 
+       legend = c("ppp", "Duplicates"),
+       col = c("forestgreen", "brown"), 
+       pch = c(1, 2), 
+       cex = 0.5)
+```
+
+# First Order Effects
+Kernel Density Estimate: estimate the intensity of the process, with a kernel estimation
+```{r}
+k500 = density(dae_ppp, sigma = 500, dimyx = 500)
+plot(k500)
+#plot(dae_proj1$geometry, cex=0.01, add=T)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.1)
+```
+
+We can see in Piacenza, Modena, Parma, Cesena, Rimini some high values, but still not so informative
+
+## Select an optimal bandwidth with Likelihood Cross Validation critirion
+```{r}
+# Setting the seed for reproducibility
+set.seed(23)
+
+# Calculate the bandwidth for the point pattern
+sigma_ppl <- bw.ppl(dae_ppp)
+print(sigma_ppl)
+```
+
+```{r}
+kopt = density(dae_ppp, sigma = sigma_ppl, dimyx = 500)
+plot(kopt)
+#plot(dae_proj1$geometry, col = "forestgreen" , add=T, cex=0.01)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.1)
+```
+
+## Trying some more values
+```{r}
+k2000 = density(dae_ppp, sigma = 2000, dimyx = 500)
+plot(k2000)
+plot(dae_proj1$geometry, col = "forestgreen", add=T, cex=0.01)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.1)
+```
+
+
+```{r}
+k5000 = density(dae_ppp, sigma = 5000, dimyx = 500)
+plot(k5000)
+plot(dae_proj1$geometry, col = "forestgreen", add=T, cex=0.01)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.1)
+```
+
+From my point of view this is the most informative plot.
+
+
+```{r}
+k10000 = density(dae_ppp, sigma = 10000, dimyx = 500)
+plot(k10000)
+plot(dae_proj1$geometry, col = "forestgreen", add=T, cex=0.01)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.1)
+```
+
+As well as this one, with different level of representation.
+
+Save all output as SpatialGrid, for different values of sigma in kernel density
+```{r}
+SG <- as(k500, "SpatialGridDataFrame")
+SG <- cbind(SG,as(kopt, "SpatialGridDataFrame"))
+SG <- cbind(SG,as(k2000, "SpatialGridDataFrame"))
+SG <- cbind(SG,as(k5000, "SpatialGridDataFrame"))
+SG <- cbind(SG,as(k10000, "SpatialGridDataFrame"))
+
+names(SG) <- c("k500","kopt","k2000","k5000","k10000")
+```
+
+
+With some plots of this kind, k500 and kopt show better granularity of this process
+```{r}
+spplot(SG, c("k500","kopt"),col.regions=terrain.colors(11))
+```
+
+
+```{r}
+# Show results
+summary(as.data.frame(SG)[,1:5])
+```
+
+
+## CSR simulated process, spacial random process following binomial distribution
+```{r}
+CSR <-runifpoint(dae_ppp$n, win = dae_ppp$window)
+
+plot(dae_ppp, cex=0.1, main= "DAE positions vs Random DAE (red)")
+plot(CSR, add=T, col='red', pch=20, cex=0.1)
+#plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.5)
+
+plot(dae_ppp, cex=0.1, main= "DAE positions vs Random DAE (red)")
+plot(CSR, add=T, col='red', pch=20, cex=0.1)
+plot(municipalities_proj, border = "darkgray", add=T, lwd = 0.5)
+```
+
+There is regular pattern of clusters, differently from the random representation in red.
+Clusters are in correspondence to main city centers and Riviera Romagnola, where in summer there is a significant increase in people presence, which the generating process probabily have taken into account.
+
+## Nearest neighbor distance
+Equivalent to G-function without border correction
+
+Calculates the nearest neighbor distances for each point in the dae_ppp point pattern, provides a summary of these distances, and then plots the empirical cumulative distribution function (ECDF) to visualize the spatial pattern of the points. This helps in understanding whether the points exhibit clustering, regularity, or randomness in their distribution.
+
+```{r}
+nns <- nndist(dae_ppp)
+#summary(nns)
+plot(ecdf(nns))  # empirical cumulative distribution function
+```
+
+It climbs very steeply in the early part of its range before flattening out, then the indication would be an observed probability of short as opposed to long nearest neighbour distances, which suggest inter-event interaction (clustering)
+In about 5 km quite every DAE has a neighbor.
+
+
+## G function: event-event distance
+Nearest Neighbour Distance Function G
+```{r}
+Gfunc <- Gest(dae_ppp)
+#Gfunc2 <- Gest(dae_ppp,correction = "none")
+plot(Gfunc,lwd=2)
+```
+
+The scale is different but still visible the same level of clustering.
+
+Might be low informative in this study considering the anthropic process, like in industry-plant location decision.
+
+In this analysis F function could be more informative to see the distance between a random point and the nearest DAE in case of need! Somehow it can be a measure of how well distributed are DAE in the territory, of course it be evaluted on the amount of people present.
+
+## Comparision with a CSR as reference (Complete Spacial Randomness - homogeneous poisson process)
+```{r}
+ex <- expression(runifpoint(dae_ppp$n, win = dae_ppp$window))
+resG <- envelope(dae_ppp, Gest, nsim = 99, simulate = ex,
+                 verbose = FALSE, saveall = TRUE)
+plot(resG)
+plot(Gfunc, add=T)
+```
+
+## F function: distance between a point and an event (Estimate the Empty Space Function)
+```{r}
+Ffunc <- Fest(dae_ppp)
+plot(Ffunc, lwd=2)
+```
+
+
+```{r}
+resF <- envelope(dae_ppp, Fest, nsim = 99, simulate = ex, verbose = FALSE, saveall = TRUE)
+plot(resF)
+```
+
+It measures how many empty spaces are present between points on the map. 
+Used for comparison with  G function, from whose graph we can deduce further evidence of clustering, regularity or Randomness.
+
+## Comparison F - G functioncs
+```{r}
+# Function to compare must be calculated for same distance values
+dist <- seq(0, 40000, 50)
+Foss <- Fest(dae_ppp,r=dist)
+Goss <- Gest(dae_ppp,r=dist)
+
+plot(Foss$rs, Goss$rs, 
+     xlim=c(0,1),ylim=c(0,1),
+     type='l',xlab="F",ylab="G")  
+
+abline(a=0,b=1,col='red')
+```
+
+Red line is the referce case of CSR, so behind a random process. In this case there is clustering, while in case of observed curve below the red one there would be repulsivness, so regolarity.
+
+## K function
+```{r}
+Kfunc <- Kest(dae_ppp)
+plot(Kfunc,lwd=2)
+```
+
+
+```{r}
+resK <- envelope(dae_ppp, Kest, nsim = 9, simulate = ex,verbose = FALSE, saveall = TRUE)
+plot(resK)
+```
+
+K function measures the distance from each point to all others, not only the nearest.
+This measure confirms the clustering, showing a curve above the red one made by CSR.
+
+
+## L function: transformation of Ripley's K-function
+The point distribution under investigation is tested against the null hypothesis that the points are distributed randomly and independently.
+```{r}
+Lfunc <- Lest(dae_ppp)
+plot(Lfunc,lwd=2)
+```
+
+
+```{r}
+resL <- envelope(dae_ppp, Lest, nsim = 9, simulate = ex, verbose = FALSE, saveall = TRUE)
+plot(resL)
+```
+
+We can see: L(r) > r showing and confirming clustering of the point process.
+
+## Conclusion
+In this analysis we have proved with different ways that DAE collocations present clustering.
+It could be interesting to go further in the analysis measuring the correlation between DAE and people present in the area, since I expect high correlation.
+
