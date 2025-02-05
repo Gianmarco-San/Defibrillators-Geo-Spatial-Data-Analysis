@@ -1,4 +1,4 @@
-# Defibrillators-Geo-Spatial-Data-Analysis
+## Defibrillators Geo Spatial Data Analysis
 
 In this work, DAE devices distribution is studied.
 
